@@ -27,6 +27,7 @@ import time
 import uuid
 import wave
 import zlib
+import sys
 
 from toolbox import AudioService
 import angus
@@ -49,16 +50,7 @@ class What(AudioService):
             "word_spotting",
             service_version)
 
-        # create a vocabulary dictionnary for word spotting service
-        angus_vocabs = dict()
-        for vocab in vocabs:
-            resources = [
-                angus_root.blobs.create(
-                    open(
-                        v,
-                        "rb")) for v in vocabs[vocab]]
-            angus_vocabs[vocab] = resources
-        self.vocabs = angus_vocabs
+        self.vocabs = vocabs
 
     def call(self, timeout=3, callback=None):
         """
@@ -69,7 +61,7 @@ class What(AudioService):
 
         # you must enable session feature with the vocabulary
         self.service.enable_session({"vocabulary": self.vocabs,
-                                     "lang": "fr-FR",
+                                     "lang": "en-US",
                                      })
 
         # the callback get the audio buffer and send it to angus to check
@@ -92,13 +84,13 @@ class What(AudioService):
 
             # call angus.ai
             job = self.service.process(
-                {'sound': open(output_path, "rb"), 'sensitivity': 0.7})
+                {'sound': open(output_path, "rb"), 'sensitivity': 0.9})
 
             # check if a keyword was spotted
             if "nbests" in job.result:
                 print job.result["nbests"]
                 if job.result["nbests"][0]["confidence"] > 0.15:
-                    result = job.result["nbests"][0]["key"]
+                    result = job.result["nbests"][0]["words"]
                     return result
 
         # run record with the angus.ai callback
@@ -169,16 +161,17 @@ class Say(AudioService):
     Call the angus.ai tts and play the result.
     """
 
-    def __init__(self, device, angus_root):
+    def __init__(self, device, angus_root, lang="en-US"):
         super(Say, self).__init__(device)
         self.service = angus_root.services.get_service("text_to_speech")
+        self.lang = lang
 
     def call(self, text):
         if not text:
             return
         job = self.service.process({
             "text": text,
-            "lang": "fr-FR",
+            "lang": self.lang,
         })
 
         # the result was encoded in base64 and compress with zlib
@@ -267,7 +260,7 @@ def retry(n, f, *args, **kwargs):
         if r:
             return r
         else:
-            say.call(u"Désolé, peux-tu répéter ?")
+            say.call(u"Sorry, could you repeat please ?")
     return None
 
 
@@ -291,22 +284,21 @@ MSGS = dict()
 
 
 def record_msgs(what, say, whois, who, play, user):
-    say.call("Pour qui veux-tu laisser le message ?")
+    say.call("Who is the recipient ?")
     forwho = retry(4, who.call, timeout=10)
     if not forwho:
         return
-    forwho = forwho.encode("utf-8")
 
-    say.call("Tu peux laisser un message maintenant et le finir par stop.")
+    say.call("You can start to leave your message and finalize it by stop.")
     wav_path = recorder.call(90)
-    say.call("Je vais rejouer le message")
+    say.call("Now, I play the recorded message:")
     play.call(wav_path)
-    say.call("Le message est-il correcte ?")
-    if retry(3, what.call, timeout=5) == "oui":
-        say.call("Le message est maintenant sauvegardé pour %s" % forwho)
+    say.call("Is the message correct ?")
+    if retry(3, what.call, timeout=5) == "yes":
+        say.call("The new message is now saved to %s." % forwho)
         MSGS.setdefault(forwho, []).append(Message(user, forwho, wav_path))
 
-    say.call("Très bien, merci et à bientôt.")
+    say.call("Alright, thank you and see you soon.")
 
 
 def read_msgs(what, say, whois, who, play, msgs):
@@ -315,85 +307,105 @@ def read_msgs(what, say, whois, who, play, msgs):
 
         while True:
             say.call(
-                "Ceci est un message déposé par %s à %s" %
-                (msg.who.encode("utf-8"), msg.timestamp.strftime("%H:%M")))
+                "This is a message record a %s at %s" %
+                (msg.who, msg.timestamp.strftime("%H:%M")))
             play.call(msg.wav)
-            say.call("Veux-tu le réécouter ?")
-            if retry(3, what.call, timeout=5) == "non":
+            say.call("Do you want play it again ?")
+            if retry(3, what.call, timeout=5) == "no":
                 break
 
-    say.call("Fin des nouveaux messages, merci.")
+    say.call("End of the new message, thank you.")
 
 
 def main_behavior(what, say, whois, who, play):
     INTROS = [
-        "Excusez-moi ?",
-        "Venez me voir",
-        "Pardon !",
-        "Coucou !",
-        "Je ne vous vois pas très bien",
+        "Excuse-me ?",
+        "Com'on",
+        "Hello !",
+        "I don't see you very well",
     ]
 
     say.call(random.choice(INTROS))
     user = whois.call(timeout=30)
     if user:
-        user = user.encode("utf-8")
-        say.call("Bonjour %s !" % user)
+        say.call("Hello %s !" % user)
 
         msgs = MSGS.get(user, [])
 
         if msgs:
             say.call(
-                "Tu as %s nouveaux messages veux-tu les écouter ?" %
+                "You have %s new messages, do you want listen them ?" %
                 (len(msgs)))
-            if retry(3, what.call, timeout=5) == "oui":
+            if retry(3, what.call, timeout=5) == "yes":
                 read_msgs(what, say, whois, who, play, msgs)
         else:
-            say.call("Tu n'as pas de nouveau messages")
+            say.call("You have no new message.")
 
-        say.call("Veux-tu laisser un message ?")
+        say.call("Do you want record a new message ?")
 
-        if retry(3, what.call, timeout=5) == "oui":
+        if retry(3, what.call, timeout=5) == "yes":
             record_msgs(what, say, whois, who, play, user)
         else:
-            say.call("Très bien bonne journée et à bientôt.")
+            say.call("Alright, have a good day, see you soon.")
 
+def choose_io(inputs=False, outputs=False):
+    p = pyaudio.PyAudio()
+    for i in range(p.get_device_count()):
+        dev = p.get_device_info_by_index(i)
+        if ((inputs and dev["maxInputChannels"] > 0) or
+            (outputs and dev["maxOutputChannels"] >0)):
+            print("%s : %s"%(i, dev["name"]))
+
+    if inputs and outputs:
+        msg = "i/o"
+    elif inputs:
+        msg = "input"
+    elif outputs:
+        msg = "output"
+
+    d = int(raw_input("Select your %s: "%msg))
+
+    return d
 
 if __name__ == "__main__":
+    ########
+    # Angus
+    ########
     root = angus.connect()
 
-    ########
-    # Corpus
-    ########
-    album = {
-        "Aurelien": ["ids/aurelien/face.jpg"],
+    ################
+    # Input / Output
+    ################
+    if len(sys.argv) == 3:
+        audio_in = int(sys.argv[1])
+        audio_out = int(sys.argv[2])
+    else:
+        audio_in = choose_io(inputs=True)
+        audio_out = choose_io(outputs=True)
+
+    ###########
+    # Directory
+    ###########
+    directory = {
+        "Aurélien": ["ids/aurelien/face.jpg"],
         "Sylvain": ["ids/sylvain/face.jpg"],
     }
 
-    targets = dict([(key, []) for key in album])
+    # define vocabulary to spot the names of targets
+    targets = [{"words": key} for key in directory]
 
-    vocabs = {
-        "oui": ["vocabs/affirmatif-0.wav", "vocabs/affirmatif-1.wav", "vocabs/affirmatif-2.wav"],
-        "non": ["vocabs/non-0.wav", "vocabs/non-1.wav", "vocabs/non-2.wav"],
-    }
-
-    stops = {"stop": [
-        "vocabs/stop-0.wav",
-        "vocabs/stop-1.wav",
-        "vocabs/stop-2.wav",
-        "vocabs/stop-3.wav"]
-    }
+    # define vocabulary for interaction
+    yesno = [ { "words": "yes"}, { "words": "no" } ]
+    stop  = [ { "words": "stop" } ]
 
     ##########
     # Services
     ##########
-    audio_in = "HD Pro Webcam C920: USB Audio (hw:1,0)"
-    audio_out = "convert"
 
-    whois = Whois(0, root, album)
+    whois = Whois(0, root, directory)
     say = Say(audio_out, root)
-    what = What(audio_in, root, vocabs, service_version=2)
-    recorder = RecordUntil(audio_in, root, stops, service_version=2)
+    what = What(audio_in, root, yesno, service_version=2)
+    recorder = RecordUntil(audio_in, root, stop, service_version=2)
     play = Play(audio_out)
     who = What(audio_in, root, targets, service_version=2)
 
@@ -402,7 +414,7 @@ if __name__ == "__main__":
     ###########
 
     say.call(
-        "Bonjour, veuillez-bien vous placer devant la caméra pour que je puisse vous reconnaitre")
+        "Hello, please put you well on video camera so I can recognize you")
 
     while True:
         main_behavior(what, say, whois, who, play)
