@@ -386,10 +386,11 @@ if __name__ == "__main__":
     ###########
     # Directory
     ###########
-    directory = {
-        "Aurélien": ["ids/aurelien/face.jpg"],
-        "Sylvain": ["ids/sylvain/face.jpg"],
-    }
+    directory = dict()
+    for name in os.listdir("ids"):
+        for face in os.listdir("ids/%s"%(name)):
+            if face.endswith(".jpg") or face.endswidth(".png"):
+                directory.setdefault(name, []).append("ids/%s/%s"%(name, face))
 
     # define vocabulary to spot the names of targets
     targets = [{"words": key} for key in directory]
